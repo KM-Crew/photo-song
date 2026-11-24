@@ -1,11 +1,12 @@
-// lab/test/run.js — node 로 도는 자동 테스트(분석·작곡). 실행: node lab/test/run.js   (자세한 표: --verbose)
-// 기준은 docs/prep/03-sonification.md 5절 "확인 방법" 칸과 docs/prep/04-compat.md 4절.
+// test/run.js — node 로 도는 자동 테스트(분석·작곡·분위기 글·주문서·악기 소리·링크). 실행: node test/run.js   (자세한 표: --verbose)
+// 기준은 color-melody docs/prep/03-sonification.md 5절 "확인 방법" 칸과 docs/prep/04-compat.md 4절.
 'use strict';
 const path = require('path');
 const A = require(path.join(__dirname, '..', 'song', 'analyze.js'));
 const C = require(path.join(__dirname, '..', 'song', 'compose.js'));
 const S = require(path.join(__dirname, '..', 'song', 'samples.js'));
 const R = require(path.join(__dirname, '..', 'song', 'render.js'));
+const P = require(path.join(__dirname, '..', 'song', 'prompt.js'));
 const VERBOSE = process.argv.includes('--verbose');
 let fail = 0;
 const ok = (name, cond, extra = '') => { if (!cond) fail++; console.log(`${cond ? 'OK ' : 'NG '} ${name}${extra ? ' — ' + extra : ''}`); };
@@ -20,7 +21,7 @@ ok('분석: 같은 입력 2번 = 같은 결과(14장)', imgs.every((im, i) => J(
 ok('분석: 새로 만든 같은 그림도 같은 결과', S.KINDS.every((k, i) => J(A.analyze(S.makeImage(k))) === J(feats[i])));
 ok('설정값·작곡: 2번 = 같은 결과(3방식)', C.METHODS.every(m => seeds.every((s, i) => J(C.compose(C.toSeed(feats[i]), m)) === J(songs[m][i]))));
 ok('설정값만으로 작곡(JSON 으로 옮겨도 같은 곡)', seeds.every((s, i) => J(C.compose(JSON.parse(J(s)), 'D')) === J(songs.D[i])));
-const src = require('fs').readFileSync(path.join(__dirname, '..', 'song', 'compose.js'), 'utf8') + require('fs').readFileSync(path.join(__dirname, '..', 'song', 'analyze.js'), 'utf8');
+const src = ['compose', 'analyze', 'prompt', 'render'].map(n => require('fs').readFileSync(path.join(__dirname, '..', 'song', n + '.js'), 'utf8')).join('\n');
 ok('난수·시각을 쓰지 않음(Math.random, Date 없음)', !/Math\.random|Date\.now|new Date/.test(src));
 
 /* 2. 분석 결과 형식 */
@@ -37,15 +38,17 @@ const inScale = s => pitched(s).every(e => C.SCALE[s.mode].includes(pc(e.midi - 
 for (const m of C.METHODS) ok(`${m}: 음계 밖 음 없음`, songs[m].every(inScale));
 ok('D: 멜로디는 5음계만', songs.D.every(s => s.events.filter(e => e.inst === 'lead').every(e => C.PENTA[s.mode].includes(pc(e.midi - s.key)))));
 ok('D: 센박(1·3박) 멜로디 음은 그 마디 화음의 구성음', songs.D.every(s => {
-  const chordPcs = bar => new Set(s.events.filter(e => e.inst === 'pad' && e.t === bar * 4).map(e => pc(e.midi)));
-  return s.events.filter(e => e.inst === 'lead' && e.t % 2 === 0).every(e => chordPcs(Math.floor(e.t / 4)).has(pc(e.midi)));
+  return s.chords.length === 8 && s.events.filter(e => e.inst === 'lead' && e.t % 2 === 0).every(e => s.chords[Math.floor(e.t / 4)].includes(pc(e.midi)));
 }));
+ok('D: 반주는 그 마디 화음의 구성음만, 마디마다 3음 이상', songs.D.every(s => s.chords.every((ch, bar) => { const c = s.events.filter(e => e.inst === 'comp' && Math.floor(e.t / 4) === bar); return c.length >= 3 && c.every(e => ch.includes(pc(e.midi))); })));
 ok('D: 마지막 멜로디 음 = 으뜸음, 마지막 화음 = 으뜸화음', songs.D.every(s => {
   const lead = s.events.filter(e => e.inst === 'lead'), last = lead[lead.length - 1], bass = s.events.filter(e => e.inst === 'bass').pop();
   return pc(last.midi) === s.key && last.t === 28 && pc(bass.midi) === s.key;
 }));
 ok('D: 동시에 울리는 멜로디 음은 1개', songs.D.every(s => { const l = s.events.filter(e => e.inst === 'lead'); return l.every((e, i) => !i || l[i - 1].t + l[i - 1].dur <= e.t + 1e-9); }));
-ok('D: 음역(멜로디 48~91, 베이스 36~48, 패드 43~67)', songs.D.every(s => s.events.every(e => e.inst === 'lead' ? e.midi >= 48 && e.midi <= 91 : e.inst === 'bass' ? e.midi >= 36 && e.midi <= 48 : e.inst === 'pad' ? e.midi >= 43 && e.midi <= 67 : true)));
+ok('D: 음역(멜로디 48~91, 베이스 36~48, 반주 43~67)', songs.D.every(s => s.events.every(e => e.inst === 'lead' ? e.midi >= 48 && e.midi <= 91 : e.inst === 'bass' ? e.midi >= 36 && e.midi <= 48 : e.inst === 'comp' ? e.midi >= 43 && e.midi <= 67 : true)));
+ok('D: 악기 구성 — 전자음 없음(통기타·피아노·하프·콘트라베이스·셰이커만), 멜로디와 반주는 다른 악기', songs.D.every(s => s.events.every(e => ['guitar', 'piano', 'harp', 'bass', 'shaker'].includes(s.inst[e.inst])) && s.inst.lead !== s.inst.comp && s.events.every(e => R.instOf(s, e) === s.inst[e.inst])));
+ok('D: 주문서의 악기 구성을 넘기면 그대로 연주, 안 넘겨도 같은 곡', seeds.every((s, i) => J(C.compose(s, 'D', P.prompt(s).spec)) === J(songs.D[i]) && C.compose(s, 'D', { lead: 'harp', comp: 'guitar' }).inst.lead === 'harp'));
 ok('D: 도입 2마디에는 베이스 없음, 절정 칸은 3~6마디 안(4~11번째 칸)', songs.D.every(s => s.events.every(e => e.inst !== 'bass' || e.t >= 8)) && seeds.every(s => s.peak >= 4 && s.peak <= 11));
 for (const m of C.METHODS) ok(`${m}: 길이 15~30초`, songs[m].every(s => s.seconds >= 15 && s.seconds < 30), [...new Set(songs[m].map(s => s.seconds))].sort((a, b) => a - b).join(', ') + '초');
 ok('세기는 구간 값(소수 2자리)만', C.METHODS.every(m => songs[m].every(s => s.events.every(e => Math.abs(e.vel * 100 - Math.round(e.vel * 100)) < 1e-9 && e.vel > 0 && e.vel <= 1))));
@@ -102,6 +105,34 @@ ok('분석 128×96 한 번 < 50ms, 작곡 < 5ms (node)', msA < 50 && msC < 5, `�
 /* 8. 설명 문장 */
 ok('설명: 그림마다 4~5문장, 흑백은 "색이 거의 없는" 문장', seeds.every(s => { const e = C.explain(s); return e.length >= 4 && e.length <= 5 && e.every(x => x.text && !/undefined/.test(x.text)); }) && /색이 거의 없는/.test(C.explain(seeds[S.KINDS.indexOf('흑백')])[0].text));
 ok('설명: "과학적으로"·"공감각" 같은 표현 없음', seeds.every(s => !/과학|공감각|당신의 기분/.test(J(C.explain(s)))));
+
+/* 8-2. 분위기 글 → 음악 주문서 */
+const moods = seeds.map(P.mood), orders = seeds.map(P.prompt);
+ok('분위기 글: 14장 모두 4문장·태그 4개·색 이름, 2번 = 같은 글', seeds.every((s, i) => { const m = moods[i]; return m.lines.length === 4 && m.tags.length === 4 && m.colors.length === s.colors.length && m.colors.every(c => c.name && /^#[0-9a-f]{6}$/.test(c.hex)) && !/undefined|NaN/.test(J(m)) && J(P.mood(s)) === J(m); }));
+ok('주문서: 14장 모두 6문장, 악기·조·빠르기·길이가 실제 곡과 같음', seeds.every((s, i) => { const o = orders[i], g = songs.D[i]; return o.lines.length === 6 && !/undefined|NaN/.test(o.text) && o.text.includes(C.INST_KO[g.inst.lead] + '가 멜로디') && o.text.includes(C.INST_KO[g.inst.comp]) && o.text.includes(g.bpm + 'BPM') && o.text.includes(C.NOTE_KO[g.key] + (g.mode === 'maj' ? ' 장조' : ' 단조')) && Math.abs(o.seconds - g.seconds) <= 1 && /셰이커/.test(o.text) === g.events.some(e => e.inst === 'hat') && J(o.spec) === J(g.inst); }));
+ok('글: 전자음 악기 이름·과장 표현 없음', seeds.every((s, i) => !/종소리|신디|패드|과학|공감각|AI가/.test(moods[i].text + orders[i].text + J(C.explain(s)))));
+ok('글: 사진마다 달라짐(분위기 글 8종 이상, 주문서 10종 이상)', new Set(moods.map(m => m.text)).size >= 8 && new Set(orders.map(o => o.text)).size >= 10, `분위기 ${new Set(moods.map(m => m.text)).size}종, 주문서 ${new Set(orders.map(o => o.text)).size}종`);
+ok('글: 링크로 받은 설정값에서도 같은 글', seeds.every((s, i) => { const back = require(path.join(__dirname, '..', 'song', 'seedlink.js')); const s2 = back.decode(back.encode(s)); return J(P.mood(s2)) === J(moods[i]) && J(P.prompt(s2)) === J(orders[i]) && P.title(s2) === P.title(s); }));
+ok('색 이름: 기본 색 9개', J(['ff0000', 'ff8800', 'ffe000', '00aa00', '00a0ff', '0000ff', '8800ff', 'ffffff', '000000'].map(P.colorName)) === J(['빨강', '주황', '노랑', '초록', '하늘색', '파랑', '보라', '흰색', '검정']), ['ff0000', 'ff8800', 'ffe000', '00aa00', '00a0ff', '0000ff', '8800ff', 'ffffff', '000000'].map(P.colorName).join(' '));
+
+/* 8-3. 악기 소리(계산으로 만든 음) */
+const SR = 44100;
+const centsOff = (x, f0) => {   // 기음 근처 ±40센트를 1센트 간격으로 훑어 가장 센 곳
+  const n = Math.min(x.length - 2205, Math.floor(SR * 0.5)); let best = -1, bc = 0;
+  for (let c = -40; c <= 40; c++) { const w = 2 * Math.PI * f0 * Math.pow(2, c / 1200) / SR; let re = 0, im = 0; for (let i = 0; i < n; i++) { const v = x[2205 + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / n)); re += v * Math.cos(w * i); im += v * Math.sin(w * i); } const p = re * re + im * im; if (p > best) { best = p; bc = c; } }
+  return bc;
+};
+const rmsOf = (x, a, b) => { let s = 0; for (let i = a; i < b; i++) s += x[i] * x[i]; return Math.sqrt(s / (b - a)); };
+const probe = []; for (const inst of R.INSTRUMENTS) for (const m of (inst === 'bass' ? [36, 43, 48] : [48, 60, 72, 84, 91])) probe.push({ inst, m, x: R.synthNote(inst, m, 1, SR) });
+const off = probe.map(p => centsOff(p.x, R.freq(p.m)));
+ok('악기 음: 음정이 ±6센트 안(통기타·피아노·하프·콘트라베이스 18음)', off.every(c => Math.abs(c) <= 6), '어긋남 ' + Math.min(...off) + '~' + Math.max(...off) + '센트');
+ok('악기 음: 값이 모두 유한하고 최대 0.9, 처음·끝은 0 근처', probe.every(p => { let pk = 0; for (const v of p.x) { if (!Number.isFinite(v)) return false; pk = Math.max(pk, Math.abs(v)); } return pk > 0.85 && pk <= 0.9001 && Math.abs(p.x[0]) < 0.01 && Math.abs(p.x[p.x.length - 1]) < 0.01; }));
+ok('악기 음: 튕기거나 친 뒤 저절로 잦아듦(끝 20% 세기 < 처음 10%의 1/10)', probe.every(p => rmsOf(p.x, Math.floor(p.x.length * 0.8), p.x.length) < rmsOf(p.x, 0, Math.floor(p.x.length / 10)) / 10));
+ok('악기 음: 같은 음 2번 = 같은 소리, 세게 치면 다른 소리', probe.every(p => { const y = R.synthNote(p.inst, p.m, 1, SR); return y.length === p.x.length && y.every((v, i) => v === p.x[i]); }) && R.synthNote('guitar', 60, 2, SR).some((v, i) => v !== probe.find(p => p.inst === 'guitar' && p.m === 60).x[i]));
+const need = s => new Set(s.events.filter(e => R.instOf(s, e) !== 'shaker').map(e => R.instOf(s, e) + ':' + e.midi + ':' + R.velBucket(e.vel)));
+const maxNeed = Math.max(...songs.D.map(s => need(s).size));
+const tSynth = (() => { const s = songs.D.reduce((a, b) => need(b).size > need(a).size ? b : a); const t = process.hrtime.bigint(); for (const k of need(s)) { const [inst, m, v] = k.split(':'); R.synthNote(inst, +m, +v, 48000); } return Number(process.hrtime.bigint() - t) / 1e6; })();
+ok('악기 음: 한 곡에 필요한 음 ≤ 80개, 전부 계산 < 400ms (node)', maxNeed <= 80 && tSynth < 400, `가장 많은 곡 ${maxNeed}개, ${tSynth.toFixed(0)}ms`);
 
 /* 9. WAV 만들기(순수 함수) */
 const pcm = new Float32Array(44100); for (let i = 0; i < pcm.length; i++) pcm[i] = Math.sin(i / 44100 * 2 * Math.PI * 440) * 0.5;

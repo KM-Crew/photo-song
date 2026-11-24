@@ -1,9 +1,11 @@
-// lab/compose.js — 사진 특징 → 곡 설정값(씨앗) → 음표 이벤트 목록. 난수·시각을 쓰지 않는다(결정적).
-// 규칙의 근거는 docs/prep/03-sonification.md (1절 음악 규칙, 6-2절 대응표, 6-3절 설정값 형식, 7절 설명 문구).
+// song/compose.js — 사진 특징 → 곡 설정값(씨앗) → 음표 이벤트 목록. 난수·시각을 쓰지 않는다(결정적).
+// 규칙의 근거는 color-melody docs/prep/03-sonification.md (1절 음악 규칙, 6-2절 대응표, 6-3절 설정값 형식, 7절 설명 문구).
 //   toSeed(features)        분석 결과를 구간 값으로 바꾼 '곡 설정값'. 공유 링크에 담을 값.
-//   compose(seed, method)   'D' 분위기+스캔(추천안) / 'B' 스캔만 / 'A' 팔레트→멜로디(지금 app.js 방식)
+//   arrange(seed)           악기 구성(음악 주문서의 악기 칸). 전자음 없이 통기타·피아노·하프·콘트라베이스·셰이커만 쓴다
+//   compose(seed, method, spec)   'D' 분위기+스캔(추천안) / 'B' 스캔만 / 'A' 팔레트→멜로디(옛 방식). spec 은 악기 구성(없으면 arrange)
 //   explain(seed)           "왜 이런 소리가 났는지" 문장 목록
-// 음표 이벤트: { t: 시작(박), dur: 길이(박), midi, vel: 0~1, inst: 'lead'|'pad'|'bass'|'spark'|'hat' }
+// 음표 이벤트: { t: 시작(박), dur: 길이(박), midi, vel: 0~1, inst: 'lead'|'comp'|'bass'|'spark'|'hat' }
+//   lead 멜로디 · comp 반주(화음) · bass 낮은 음 · spark 높은 꾸밈음 · hat 박자(셰이커). 실제 악기는 곡의 inst 표에서 고른다
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.LabCompose = factory();
@@ -21,6 +23,7 @@
   var LEADS = ['piano', 'bell', 'pluck'];
   var BARS = 8, BEATS = 4;
   var NOTE_KO = ['도', '도#', '레', '레#', '미', '파', '파#', '솔', '솔#', '라', '라#', '시'];
+  var INST_KO = { guitar: '통기타', piano: '피아노', harp: '하프', bass: '콘트라베이스', shaker: '셰이커' };
   var NOTE_EN = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
   // 구간 경계(초안, 시험 그림 14장으로 맞춘 값). 값 < 경계[0] 이면 0, ... 마지막 경계 이상이면 length
@@ -74,13 +77,30 @@
     };
   }
 
+  /* ---------- 악기 구성 ---------- */
+  // 설정값의 lead 이름(pluck·piano·bell)은 이미 보낸 링크 때문에 그대로 두고, 여기서 실제 악기로 옮긴다
+  var LEAD_INST = { pluck: 'guitar', piano: 'piano', bell: 'harp' };
+  function arrange(seed) {
+    var lead = LEAD_INST[seed.lead] || 'piano';
+    return {
+      lead: lead,
+      comp: lead === 'piano' ? 'guitar' : 'piano',       // 멜로디가 건반이면 반주는 줄, 줄이면 건반
+      bass: 'bass',
+      spark: lead === 'harp' ? '' : 'harp',
+      hat: seed.rhythm >= 3 ? 'shaker' : ''
+    };
+  }
+  var PLAIN = { lead: 'piano', comp: 'piano', bass: 'bass', spark: '', hat: '' };
+
   /* ---------- 2단계: 곡 설정값 → 음표 ---------- */
   function rootMidi(seed) { return 60 + (seed.key > 6 ? seed.key - 12 : seed.key); } // 으뜸음을 C4±6반음 안으로
 
   // D. 분위기로 틀(조·장단조·빠르기·화음·리듬·악기) + 좌→우 스캔 멜로디 + 도입–전개–마무리
-  function composeD(seed) {
+  function composeD(seed, spec) {
     var mode = seed.mode, scale = SCALE[mode], penta = PENTA[mode], prog = PROG[mode][seed.prog];
-    var root = rootMidi(seed), leadBase = root + 12 * seed.register, ev = [], peakDone = false;
+    var root = rootMidi(seed), leadBase = root + 12 * seed.register, ev = [], peakDone = false, chords = [];
+    var def = arrange(seed), arr = {};
+    ['lead', 'comp', 'bass', 'spark', 'hat'].forEach(function (k) { arr[k] = spec && typeof spec[k] === 'string' ? spec[k] : def[k]; });
     var VEL = [0.42, 0.56, 0.7], intro = [0.9, 0.8, 0.7][seed.dyn];
     var chordAt = function (bar) {
       if (bar === BARS - 1) return 0;                       // 마지막 마디는 으뜸화음
@@ -92,7 +112,16 @@
       var section = bar < 2 ? 'intro' : bar < 6 ? 'dev' : 'close', gain = section === 'intro' ? intro : section === 'dev' ? 1 : 0.85;
       var tones = [0, 2, 4].map(function (k) { return deg(scale, root - 12, ch + k); });
       var pcs = tones.map(function (m) { return ((m % 12) + 12) % 12; });
-      tones.forEach(function (m) { ev.push({ t: t0, dur: BEATS, midi: fold(m, 43, 67), vel: section === 'dev' ? 0.3 : 0.24, inst: 'pad' }); });
+      var low = tones.map(function (m) { return fold(m, 43, 67); }).sort(function (a, b) { return a - b; }), cv = section === 'dev' ? 0.3 : 0.24, cv2 = Math.round((cv - 0.06) * 100) / 100;
+      chords.push(pcs);
+      if (arr.comp === 'guitar' && !last) {                 // 통기타 반주: 화음을 한 음씩 풀어서(느리면 4분음표, 아니면 8분음표)
+        (seed.rhythm >= 2 ? [0, 1, 2, 1, 0, 2, 1, 2] : [0, -1, 1, -1, 2, -1, 1, -1]).forEach(function (k, q) {
+          if (k >= 0) ev.push({ t: t0 + q / 2, dur: seed.rhythm >= 2 ? 1 : 2, midi: low[k], vel: q === 0 ? cv : cv2, inst: 'comp' });
+        });
+      } else {                                              // 피아노 반주(와 마지막 마디): 화음을 한 번에. 리듬 2단계부터 한 마디에 두 번
+        var hits = arr.comp !== 'guitar' && seed.rhythm >= 2 && !last ? [0, 2] : [0];
+        hits.forEach(function (b, i) { low.forEach(function (m) { ev.push({ t: t0 + b, dur: BEATS / hits.length, midi: m, vel: i ? cv2 : cv, inst: 'comp' }); }); });
+      }
       if (section !== 'intro') {                            // 베이스는 전개부터
         var b0 = fold(deg(scale, root - 24, ch), 36, 48);
         ev.push({ t: t0, dur: last || seed.rhythm === 0 ? BEATS : 2, midi: b0, vel: 0.55, inst: 'bass' });
@@ -112,10 +141,10 @@
         var steps = 1; while (q + steps < 8 && !pat[q + steps] && steps < 4) steps++;
         ev.push({ t: t0 + q / 2, dur: steps / 2, midi: fold(m, 48, 91), vel: Math.round(VEL[seed.vel[col]] * gain * (strong ? 1 : 0.85) * 100) / 100, inst: 'lead' });
       }
-      if (section === 'dev' && seed.pad === 1 && seed.lead !== 'bell') ev.push({ t: t0 + 3, dur: 1, midi: fold(tones[1] + 24, 72, 96), vel: 0.2, inst: 'spark' }); // 반짝임
-      if (section !== 'intro' && seed.rhythm >= 3) for (var hq = 0; hq < 8; hq++) ev.push({ t: t0 + hq / 2, dur: 0.25, midi: 0, vel: hq % 2 ? 0.08 : 0.13, inst: 'hat' });
+      if (section === 'dev' && seed.pad === 1 && arr.spark) ev.push({ t: t0 + 3, dur: 1, midi: fold(tones[1] + 24, 72, 96), vel: 0.2, inst: 'spark' }); // 반짝임
+      if (section !== 'intro' && arr.hat) for (var hq = 0; hq < 8; hq++) ev.push({ t: t0 + hq / 2, dur: 0.25, midi: 0, vel: hq % 2 ? 0.08 : 0.13, inst: 'hat' });
     }
-    return finish('D', seed, seed.bpm, seed.key, mode, seed.lead, ev);
+    return finish('D', seed, seed.bpm, seed.key, mode, seed.lead, ev, arr, chords);
   }
 
   // B. 스캔만: C장조 5음계·96BPM 고정. 칸마다 2박, 두 음
@@ -127,7 +156,7 @@
       ev.push({ t: k * 2, dur: 1, midi: deg(PENTA.maj, 60, a), vel: v, inst: 'lead' });
       ev.push({ t: k * 2 + 1, dur: 1, midi: deg(PENTA.maj, 60, b), vel: Math.round((v - 0.08) * 100) / 100, inst: 'lead' });
     }
-    return finish('B', seed, 96, 0, 'maj', 'piano', ev);
+    return finish('B', seed, 96, 0, 'maj', 'piano', ev, PLAIN);
   }
 
   // A. 팔레트 → 멜로디(지금 app.js 규칙): C 5음계 고정, 색상 36도마다 한 음, 108BPM. 채도 낮은 색은 음이 없다
@@ -138,24 +167,25 @@
       ev.push({ t: s / 2, dur: 0.5, midi: deg(PENTA.maj, 60 + 12 * oct, Math.floor(c.h / 36) % 10), vel: [0.45, 0.6, 0.75][bin(c.s, [0.4, 0.7])], inst: 'lead' });
       if (s % 4 === 0) ev.push({ t: s / 2, dur: 2, midi: fold(deg(PENTA.maj, 36, Math.floor(pal[0].h / 36) % 10), 36, 48), vel: 0.45, inst: 'bass' });
     }
-    return finish('A', seed, 108, 0, 'maj', 'piano', ev);
+    return finish('A', seed, 108, 0, 'maj', 'piano', ev, PLAIN);
   }
 
-  function finish(method, seed, bpm, key, mode, lead, ev) {
+  function finish(method, seed, bpm, key, mode, lead, ev, inst, chords) {
     ev.sort(function (a, b) { return a.t - b.t || (a.inst < b.inst ? -1 : a.inst > b.inst ? 1 : a.midi - b.midi); });
     var beats = BARS * BEATS, spb = 60 / bpm;
     return {
       method: method, bpm: bpm, key: key, mode: mode, lead: lead, pad: seed.pad, bars: BARS, beats: beats,
+      inst: inst, chords: chords || [],                                 // 악기 구성, 마디별 화음 구성음(0~11)
       scanSeconds: Math.round(beats * spb * 1000) / 1000,               // 재생 막대가 사진을 지나가는 시간
       seconds: Math.round((beats * spb + Math.min(2, BEATS * spb)) * 1000) / 1000, // 여운 포함 전체 길이
       events: ev
     };
   }
 
-  function compose(seed, method) {
+  function compose(seed, method, spec) {
     if (method === 'A') return composeA(seed);
     if (method === 'B') return composeB(seed);
-    return composeD(seed);
+    return composeD(seed, spec);
   }
 
   /* ---------- 설명 문장(구간 값에서 고른다) ---------- */
@@ -170,7 +200,7 @@
     out.push({ k: 'pace', text: pace, detail: seed.bpm + 'BPM · 리듬 ' + seed.rhythm + '단계' });
     if (!seed.gray) out.push({ k: 'key', text: '가장 넓은 색이 이 곡의 중심음 \'' + NOTE_KO[seed.key] + '\'를 정했어요', color: '#' + seed.colors[0], detail: NOTE_EN[seed.key] + (seed.mode === 'maj' ? ' 장조' : ' 단조') });
     out.push({ k: 'scan', text: '사진을 왼쪽에서 오른쪽으로 읽었어요. 밝은 곳이 위에 있을수록 높은 음이 나요', detail: '세로줄 16칸 → 8마디' });
-    out.push({ k: 'lead', text: { pluck: '따뜻한 색이 많아 통통 튀는 줄 소리로 연주해요', piano: '따뜻함과 차가움이 반반이라 피아노 느낌의 소리로 연주해요', bell: '차갑거나 어두운 색이 많아 맑은 종소리로 연주해요' }[seed.lead], detail: seed.lead });
+    out.push({ k: 'lead', text: { pluck: '따뜻한 색이 많아 통기타가 멜로디를 맡았어요', piano: '따뜻함과 차가움이 반반이라 피아노가 멜로디를 맡았어요', bell: '차갑거나 어두운 색이 많아 맑은 하프가 멜로디를 맡았어요' }[seed.lead], detail: '멜로디 ' + INST_KO[LEAD_INST[seed.lead]] + ' · 반주 ' + INST_KO[arrange(seed).comp] });
     return out;
   }
 
@@ -196,6 +226,7 @@
   return {
     METHODS: ['D', 'B', 'A'], METHOD_NAME: { D: '분위기 + 스캔', B: '스캔만', A: '팔레트(지금 방식)' },
     PENTA: PENTA, SCALE: SCALE, PROG: PROG, RHYTHM: RHYTHM, BPM: BPM, LEADS: LEADS, CUT: CUT, NOTE_KO: NOTE_KO, NOTE_EN: NOTE_EN,
-    toSeed: toSeed, compose: compose, explain: explain, rootMidi: rootMidi, signature: signature, distance: distance
+    INST_KO: INST_KO, hexHsl: hexHsl,
+    toSeed: toSeed, arrange: arrange, compose: compose, explain: explain, rootMidi: rootMidi, signature: signature, distance: distance
   };
 });
