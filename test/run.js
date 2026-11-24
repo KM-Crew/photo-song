@@ -45,6 +45,12 @@ ok('D: 마지막 멜로디 음 = 으뜸음, 마지막 화음 = 으뜸화음', so
   const lead = s.events.filter(e => e.inst === 'lead'), last = lead[lead.length - 1], bass = s.events.filter(e => e.inst === 'bass').pop();
   return pc(last.midi) === s.key && last.t === 28 && pc(bass.midi) === s.key;
 }));
+const onsets = (s, inst, bar) => { const g = Array(8).fill('.'); s.events.filter(e => e.inst === inst && Math.floor(e.t / 4) === bar).forEach(e => { g[Math.round((e.t - bar * 4) * 2)] = 'x'; }); return g.join(''); };
+const barsOf = (s, inst, from) => [0, 1, 2, 3, 4, 5, 6].filter(b => b >= from).map(b => onsets(s, inst, b));
+const kinds = songs.D.map(s => new Set(barsOf(s, 'lead', 0)).size);
+ok('D: 멜로디 리듬 — 이웃한 마디가 똑같지 않고, 곡마다 3종 이상(1~7마디)', songs.D.every(s => { const b = barsOf(s, 'lead', 0); return b.every((p, i) => !i || p !== b[i - 1]) && new Set(b).size >= 3; }), `곡별 ${Math.min(...kinds)}~${Math.max(...kinds)}종`);
+ok('D: 반주·베이스 리듬도 한 가지로 되풀이하지 않음(반주 2종 이상, 베이스 2종 이상)', songs.D.every(s => new Set(barsOf(s, 'comp', 0)).size >= 2 && new Set(barsOf(s, 'bass', 2)).size >= 2));
+ok('D: 마무리 마디(7번째)는 그 곡에서 가장 촘촘한 마디보다 성김, 도입 첫 마디 반주는 가장 단순한 틀', songs.D.every(s => { const n = b => s.events.filter(e => e.inst === 'lead' && Math.floor(e.t / 4) === b).length; return n(6) <= Math.max(n(2), n(3), n(4), n(5)); }));
 ok('D: 동시에 울리는 멜로디 음은 1개', songs.D.every(s => { const l = s.events.filter(e => e.inst === 'lead'); return l.every((e, i) => !i || l[i - 1].t + l[i - 1].dur <= e.t + 1e-9); }));
 ok('D: 음역(멜로디 48~91, 베이스 36~48, 반주 43~67)', songs.D.every(s => s.events.every(e => e.inst === 'lead' ? e.midi >= 48 && e.midi <= 91 : e.inst === 'bass' ? e.midi >= 36 && e.midi <= 48 : e.inst === 'comp' ? e.midi >= 43 && e.midi <= 67 : true)));
 ok('D: 악기 구성 — 전자음 없음(통기타·피아노·하프·콘트라베이스·셰이커만), 멜로디와 반주는 다른 악기', songs.D.every(s => s.events.every(e => ['guitar', 'piano', 'harp', 'bass', 'shaker'].includes(s.inst[e.inst])) && s.inst.lead !== s.inst.comp && s.events.every(e => R.instOf(s, e) === s.inst[e.inst])));
@@ -84,6 +90,7 @@ for (const [name, im] of Object.entries(extreme)) {
   try {
     const f = A.analyze(im), s = C.toSeed(f);
     for (const m of ['D', 'B']) { const song = C.compose(s, m); if (song.events.filter(e => e.inst === 'lead').length < 8 || !inScale(song) || !(song.seconds >= 15 && song.seconds < 30)) err = m + ' 곡이 규칙을 어김'; }
+    const lb = barsOf(C.compose(s, 'D'), 'lead', 0); if (lb.some((p, i) => i && p === lb[i - 1])) err = '이웃한 마디의 리듬이 같음';
     C.compose(s, 'A'); C.explain(s);
     if (!f.palette.length || f.layout.columns.some(c => !c || Number.isNaN(c.l + c.s + c.lift))) err = '분석 값 누락';
     info = `${f.size.w}×${f.size.h}, 색 ${f.palette.length}개, ${s.mode} ${C.NOTE_EN[s.key]} ${s.bpm}BPM` + (f.flags.mostlyTransparent ? ', 투명→흰 배경' : '');
