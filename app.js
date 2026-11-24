@@ -1,8 +1,9 @@
 /* app.js — 색의 노래: 사진 → 노래 (첫 화면 · 결과 · 받은 노래)
-   흐름: 픽셀 → 특징(song/analyze) → 곡 설정값(song/compose.toSeed) → 음표(compose, 방식 D) → 소리(song/render)
+   흐름: ① 사진 분석(song/analyze → compose.toSeed) → ② 분위기를 글로(song/prompt.mood) → ③ 음악 주문서(prompt.prompt)
+        → ④ 음원 생성(compose 방식 D + 주문서의 악기 구성 → song/render 가 악기 소리로 연주)
    사진은 메모리에만 둔다. 서버·저장·외부 요청 없음. */
 'use strict';
-const A = LabAnalyze, C = LabCompose, R = LabRender, L = LabSeedLink, S = LabSamples;
+const A = LabAnalyze, C = LabCompose, R = LabRender, L = LabSeedLink, S = LabSamples, P = LabPrompt;
 const SAMPLES = ['노을', '숲', '야경'];
 const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const cur = { seed: null, cols: null, pic: null, name: '', auto: false };   // 지금 사진의 곡(새로고침하면 사라짐)
@@ -59,14 +60,12 @@ function ensureCtx() {
 }
 
 /* ---------- 곡 이름·요약 (같은 설정값 = 같은 이름, 난수 없음) ---------- */
-const FRONT = { maj: ['포근한', '환한', '반짝이는'], min: ['짙은', '잔잔한', '서늘한'] };   // 음역 −1·0·+1
-const BACK = { 72: '자장가', 84: '오후', 96: '산책', 108: '발걸음', 120: '춤' };
-const titleOf = s => (s.gray ? '고요한' : FRONT[s.mode][s.register + 1]) + ' ' + BACK[s.bpm];
-const LEAD_KO = { piano: '피아노', bell: '종소리', pluck: '줄 소리' };
+const titleOf = P.title;
 function summaryOf(song) {
   const lv = C.BPM.indexOf(song.bpm);
-  return [C.NOTE_KO[song.key] + (song.mode === 'maj' ? ' 장조' : ' 단조'), lv <= 1 ? '느리게' : lv === 2 ? '걷는 빠르기' : '빠르게', LEAD_KO[song.lead] || song.lead].join(' · ');
+  return [C.NOTE_KO[song.key] + (song.mode === 'maj' ? ' 장조' : ' 단조'), lv <= 1 ? '느리게' : lv === 2 ? '걷는 빠르기' : '빠르게', C.INST_KO[song.inst.lead] + '와 ' + C.INST_KO[song.inst.comp]].join(' · ');
 }
+const playersOf = song => ['lead', 'comp', 'bass', 'spark', 'hat'].map(k => C.INST_KO[song.inst[k]]).filter((v, i, a) => v && a.indexOf(v) === i);
 const lightHex = hex => { const n = parseInt(hex.slice(1), 16); return (0.299 * (n >> 16) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) / 255 > 0.55; };
 
 /* 받은 노래: 사진 대신 색 악보(16칸, 멜로디 높이만큼 올라간 막대) */
@@ -89,7 +88,7 @@ Router.on('/', root => {
     <section class="home split s73 center">
       <div class="stack">
         <h1>내 사진은<br>어떤 노래일까?</h1>
-        <p class="muted">사진을 넣으면 색과 분위기를 읽어 20초 남짓한 노래로 들려줘요. 같은 사진은 언제나 같은 노래예요.</p>
+        <p class="muted">사진을 넣으면 색과 분위기를 읽어 기타와 피아노로 연주한 20초 남짓한 노래를 들려줘요. 같은 사진은 언제나 같은 노래예요.</p>
         <label class="btn primary big block pick" id="pick">📷 사진 고르기<input type="file" accept="image/*" id="file"></label>
         <p class="small muted dropnote">사진을 이 창에 끌어다 놓거나 Ctrl+V로 붙여넣어도 돼요.</p>
         <p id="msg" class="small msg" role="status"></p>
@@ -102,9 +101,10 @@ Router.on('/', root => {
       <div class="card how">
         <h3>이렇게 노래가 돼요</h3>
         <ol>
-          <li><b>분위기</b>(밝기·선명함) → 음계와 빠르기</li>
-          <li><b>왼쪽에서 오른쪽</b>으로 읽은 밝기 흐름 → 멜로디</li>
-          <li><b>따뜻하고 차가운 색</b> → 악기 소리</li>
+          <li><b>사진 분석</b> — 색, 밝기, 선과 무늬, 빛의 흐름을 읽어요</li>
+          <li><b>분위기를 글로</b> — 읽은 것을 몇 문장으로 옮겨요</li>
+          <li><b>음악 주문서</b> — 그 글로 악기·빠르기·음계를 정한 프롬프트를 써요</li>
+          <li><b>음원 생성</b> — 주문서대로 통기타·피아노·하프 소리로 연주해요</li>
         </ol>
       </div>
     </section>`);
@@ -136,7 +136,8 @@ Router.on('/song', (root, params) => {
     if (!cur.seed) { Router.go('/'); return; }
     ({ seed, cols, pic } = cur);
   }
-  const song = C.compose(seed, 'D'), title = titleOf(seed);
+  // ② 분위기를 글로 → ③ 음악 주문서 → ④ 주문서의 악기 구성으로 음원 생성
+  const mood = P.mood(seed), order = P.prompt(seed), song = C.compose(seed, 'D', order.spec), title = titleOf(seed);
   const link = location.href.split('#')[0] + '#/song?s=' + L.encode(seed);
   const why = C.explain(seed);
   const view = h(`
@@ -158,9 +159,20 @@ Router.on('/song', (root, params) => {
         </div>
         ${IOS ? '<p class="small muted">소리가 안 들리면 옆면 무음 스위치를 확인해 주세요.</p>' : ''}
         <div class="card why">
-          <h3>왜 이런 소리가 났을까</h3>
-          <ol>${why.map(e => `<li>${e.color ? `<span class="sw" style="background:${e.color}"></span>` : ''}${esc(e.text)}</li>`).join('')}</ol>
-          <details><summary>자세히</summary><ul class="small muted">${why.map(e => `<li>${esc(e.detail)}</li>`).join('')}</ul></details>
+          <h3>이렇게 만들었어요</h3>
+          <ol class="steps">
+            <li><b>사진 분석</b>
+              <p class="chips">${mood.colors.map(c => `<span class="chip"><span class="sw" style="background:${c.hex}"></span>${esc(c.name)}</span>`).join('')}</p>
+              <p class="small muted">색 ${mood.colors.length}가지 · 밝기 · 선과 무늬 · 왼쪽에서 오른쪽으로 16칸의 빛 높이</p></li>
+            <li><b>분위기를 글로</b>
+              <p id="mood">${esc(mood.text)}</p>
+              <p class="chips">${mood.tags.map(t => `<span class="chip tag">#${esc(t)}</span>`).join('')}</p></li>
+            <li><b>음악 주문서(프롬프트)</b>
+              <blockquote class="prompt" id="prompt">${esc(order.text)}</blockquote></li>
+            <li><b>음원 생성</b>
+              <p id="made">주문서대로 ${esc(playersOf(song).join(' · '))} 소리로 ${Math.round(song.seconds)}초짜리 곡을 연주했어요.</p></li>
+          </ol>
+          <details><summary>음으로 옮긴 규칙 자세히</summary><ul class="small rules">${why.map(e => `<li>${e.color ? `<span class="sw" style="background:${e.color}"></span>` : ''}${esc(e.text)} <span class="muted">(${esc(e.detail)})</span></li>`).join('')}</ul></details>
         </div>
         <div class="row share">
           <button class="btn primary grow" id="share" type="button">🔗 링크로 보내기</button>
@@ -211,9 +223,11 @@ Router.on('/song', (root, params) => {
   const onKey = e => { if (e.code === 'Space' && !e.target.closest('input, textarea, select, button, a, summary')) { e.preventDefault(); btn.click(); } };
   const onVis = () => { if (document.hidden) stop(); };   // 다른 앱으로 가면 멈추고, 돌아와도 자동으로 다시 틀지 않음
   addEventListener('keydown', onKey); document.addEventListener('visibilitychange', onVis);
+  let warmId = 0;
   if (!recv && cur.auto && audio.ctx && audio.ctx.state === 'running') play();
+  else if (audio.ctx) warmId = setTimeout(() => R.warm(audio.ctx, song), 60);   // 악기 음을 미리 계산해 두면 ▶가 바로 나옴
   cur.auto = false;
-  return () => { stop(); removeEventListener('keydown', onKey); document.removeEventListener('visibilitychange', onVis); };
+  return () => { stop(); clearTimeout(warmId); removeEventListener('keydown', onKey); document.removeEventListener('visibilitychange', onVis); };
 });
 
 window.App = { cur, audio, titleOf, loadSample };   // 테스트용

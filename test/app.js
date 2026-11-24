@@ -48,7 +48,9 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     ok(P + '자동 재생: 소리 장치 running·막대 이동', st.state === 'running' && st.playing && st.bar && st.left > 0 && /멈춤/.test(st.btn), JSON.stringify(st));
     ok(P + '결과: 가로 넘침 없음', await noOverflow());
     ok(P + '결과: 이름 없는 버튼 0', (await unnamed()) === 0);
-    ok(P + '설명 카드 4줄 이상', (await ev(() => document.querySelectorAll('.why ol li').length)) >= 4);
+    const pipe = await ev(() => ({ steps: document.querySelectorAll('.why .steps > li').length, chips: document.querySelectorAll('.why .chip .sw').length, tags: document.querySelectorAll('.why .chip.tag').length, mood: document.querySelector('#mood').textContent, prompt: document.querySelector('#prompt').textContent, made: document.querySelector('#made').textContent, sub: document.querySelector('.songtitle + p').textContent, rules: document.querySelectorAll('.why details li').length, inst: App.audio.playing ? JSON.stringify(LabCompose.compose(App.cur.seed, 'D').inst) : '' }));
+    ok(P + '만든 과정 4단계: 분석(색) → 분위기 글 → 주문서 → 음원 생성', pipe.steps === 4 && pipe.chips >= 1 && pipe.tags === 4 && pipe.mood.length > 30 && pipe.rules >= 4, pipe.mood);
+    ok(P + '주문서와 실제 연주 악기가 같음(통기타 멜로디 + 피아노 반주), 전자음 이름 없음', /통기타가 멜로디/.test(pipe.prompt) && /피아노/.test(pipe.prompt) && /통기타 · 피아노 · 콘트라베이스/.test(pipe.made) && /통기타와 피아노/.test(pipe.sub) && /"lead":"guitar","comp":"piano"/.test(pipe.inst) && !/종소리|줄 소리/.test(pipe.prompt + pipe.made + pipe.sub), pipe.made);
 
     // 3. Space 로 멈춤/재생
     await page.focus('body'); await page.keyboard.press('Space'); await wait(100);
